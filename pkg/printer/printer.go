@@ -5,7 +5,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/fishpie/kubectl-podview/pkg/analyzer"
+	"github.com/FishPie-HQ/kubectl-podview/pkg/analyzer"
 )
 
 // 终端颜色代码
@@ -58,10 +58,10 @@ func (p *Printer) PrintPodTable(result *analyzer.AnalysisResult, showAll bool) {
 func (p *Printer) printPodRow(pod analyzer.PodAnalysis) {
 	// 状态颜色
 	statusColor := p.getStatusColor(pod.Status)
-	
+
 	// 状态图标
 	statusIcon := p.getStatusIcon(pod.Status)
-	
+
 	// 格式化 reason，如果太长就截断
 	reason := pod.Reason
 	if len(reason) > 30 {
@@ -99,35 +99,35 @@ func (p *Printer) printPodRow(pod analyzer.PodAnalysis) {
 func (p *Printer) PrintSummary(result *analyzer.AnalysisResult) {
 	fmt.Fprintln(p.out, colorBold+"📊 Summary"+colorReset)
 	fmt.Fprintln(p.out, strings.Repeat("-", 40))
-	
+
 	fmt.Fprintf(p.out, "Total Pods:     %d\n", result.TotalPods)
-	
+
 	// 健康的用绿色
 	if result.HealthyPods > 0 {
 		fmt.Fprintf(p.out, "%sHealthy:        %d%s\n", colorGreen, result.HealthyPods, colorReset)
 	}
-	
+
 	// Pending 用蓝色
 	if result.PendingPods > 0 {
 		fmt.Fprintf(p.out, "%sPending:        %d%s\n", colorBlue, result.PendingPods, colorReset)
 	}
-	
+
 	// Warning 用黄色
 	if result.WarningPods > 0 {
 		fmt.Fprintf(p.out, "%sWarning:        %d%s\n", colorYellow, result.WarningPods, colorReset)
 	}
-	
+
 	// Error 用红色
 	if result.ErrorPods > 0 {
 		fmt.Fprintf(p.out, "%sError:          %d%s\n", colorRed, result.ErrorPods, colorReset)
 	}
-	
+
 	fmt.Fprintf(p.out, "Total Restarts: %d\n", result.TotalRestarts)
-	
+
 	if result.ConfigIssueCount > 0 {
 		fmt.Fprintf(p.out, "%sConfig Issues:  %d%s\n", colorYellow, result.ConfigIssueCount, colorReset)
 	}
-	
+
 	fmt.Fprintln(p.out)
 }
 
