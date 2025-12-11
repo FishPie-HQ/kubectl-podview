@@ -5,7 +5,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/fishpie/kubectl-podview/pkg/analyzer"
+	"github.com/FishPie-HQ/kubectl-podview/pkg/analyzer"
 )
 
 // 终端颜色代码
