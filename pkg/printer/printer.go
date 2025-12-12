@@ -32,51 +32,81 @@ func NewPrinter(out io.Writer) *Printer {
 
 // PrintPodTable 打印 Pod 表格
 func (p *Printer) PrintPodTable(result *analyzer.AnalysisResult, showAll bool, showNamespace bool) {
-	// 表头 - 根据是否显示命名空间决定格式
-	var header string
+	// 先过滤出要显示的 pods
+	var podsToShow []analyzer.PodAnalysis
+	for _, pod := range result.Pods {
+		if showAll || pod.Status != analyzer.StatusHealthy || len(pod.ConfigIssues) > 0 {
+			podsToShow = append(podsToShow, pod)
+		}
+	}
+
+	if len(podsToShow) == 0 {
+		fmt.Fprintln(p.out, colorGreen+"  ✓ All pods are healthy!"+colorReset)
+		fmt.Fprintln(p.out)
+		return
+	}
+
+	// 计算各列的最大宽度
+	maxNameLen := len("NAME")
+	maxNsLen := len("NAMESPACE")
+	for _, pod := range podsToShow {
+		if len(pod.Name) > maxNameLen {
+			maxNameLen = len(pod.Name)
+		}
+		if showNamespace && len(pod.Namespace) > maxNsLen {
+			maxNsLen = len(pod.Namespace)
+		}
+	}
+
+	// 限制最大宽度，避免太长
+	if maxNameLen > 60 {
+		maxNameLen = 60
+	}
+	if maxNsLen > 25 {
+		maxNsLen = 25
+	}
+
+	// 构建表头格式
+	var headerFmt, rowFmt string
 	var separator int
 	if showNamespace {
-		header = fmt.Sprintf("%-20s %-35s %-10s %-8s %-10s %-8s %-10s %-5s %-s",
-			"NAMESPACE", "NAME", "STATUS", "READY", "RESTARTS", "AGE", "RUNNING", "ECI", "REASON")
-		separator = 130
+		headerFmt = fmt.Sprintf("%%-%ds  %%-%ds  %%-10s %%-7s %%-10s %%-9s %%-9s %%-5s %%s", maxNsLen, maxNameLen)
+		rowFmt = fmt.Sprintf("%%-%ds  %%-%ds  %%s%%-10s%%s %%-7s %%-10d %%-9s %%-9s %%-5s %%s%%s", maxNsLen, maxNameLen)
+		separator = maxNsLen + maxNameLen + 80
 	} else {
-		header = fmt.Sprintf("%-40s %-10s %-8s %-10s %-8s %-10s %-5s %-s",
-			"NAME", "STATUS", "READY", "RESTARTS", "AGE", "RUNNING", "ECI", "REASON")
-		separator = 115
+		headerFmt = fmt.Sprintf("%%-%ds  %%-10s %%-7s %%-10s %%-9s %%-9s %%-5s %%s", maxNameLen)
+		rowFmt = fmt.Sprintf("%%-%ds  %%s%%-10s%%s %%-7s %%-10d %%-9s %%-9s %%-5s %%s%%s", maxNameLen)
+		separator = maxNameLen + 75
 	}
-	fmt.Fprintln(p.out, colorBold+header+colorReset)
+
+	// 打印表头
+	if showNamespace {
+		header := fmt.Sprintf(headerFmt, "NAMESPACE", "NAME", "STATUS", "READY", "RESTARTS", "AGE", "RUNNING", "ECI", "REASON")
+		fmt.Fprintln(p.out, colorBold+header+colorReset)
+	} else {
+		header := fmt.Sprintf(headerFmt, "NAME", "STATUS", "READY", "RESTARTS", "AGE", "RUNNING", "ECI", "REASON")
+		fmt.Fprintln(p.out, colorBold+header+colorReset)
+	}
 	fmt.Fprintln(p.out, strings.Repeat("-", separator))
 
-	displayedCount := 0
-	for _, pod := range result.Pods {
-		// 如果不是 showAll 模式，跳过健康的 Pod
-		if !showAll && pod.Status == analyzer.StatusHealthy && len(pod.ConfigIssues) == 0 {
-			continue
-		}
-
-		displayedCount++
-		p.printPodRow(pod, showNamespace)
+	// 打印每行
+	for _, pod := range podsToShow {
+		p.printPodRowDynamic(pod, showNamespace, rowFmt, maxNsLen, maxNameLen)
 	}
 
-	if displayedCount == 0 {
-		fmt.Fprintln(p.out, colorGreen+"  ✓ All pods are healthy!"+colorReset)
-	}
 	fmt.Fprintln(p.out)
 }
 
-// printPodRow 打印单行 Pod 信息
-func (p *Printer) printPodRow(pod analyzer.PodAnalysis, showNamespace bool) {
+// printPodRowDynamic 使用动态格式打印单行 Pod 信息
+func (p *Printer) printPodRowDynamic(pod analyzer.PodAnalysis, showNamespace bool, rowFmt string, maxNsLen, maxNameLen int) {
 	// 状态颜色
 	statusColor := p.getStatusColor(pod.Status)
 
 	// 状态图标
 	statusIcon := p.getStatusIcon(pod.Status)
 
-	// 格式化 reason，如果太长就截断
+	// 格式化 reason
 	reason := pod.Reason
-	if len(reason) > 25 {
-		reason = reason[:22] + "..."
-	}
 
 	// ECI 标记
 	eciMark := "-"
@@ -90,11 +120,22 @@ func (p *Printer) printPodRow(pod analyzer.PodAnalysis, showNamespace bool) {
 		configMark = colorYellow + " ⚙" + colorReset
 	}
 
+	// 处理名称截断（仅在超过最大宽度时）
+	displayName := pod.Name
+	if len(displayName) > maxNameLen {
+		displayName = displayName[:maxNameLen-3] + "..."
+	}
+
+	displayNs := pod.Namespace
+	if len(displayNs) > maxNsLen {
+		displayNs = displayNs[:maxNsLen-3] + "..."
+	}
+
 	// 打印主行
 	if showNamespace {
-		fmt.Fprintf(p.out, "%-20s %-35s %s%-10s%s %-8s %-10d %-8s %-10s %-5s %s%s\n",
-			truncate(pod.Namespace, 20),
-			truncate(pod.Name, 35),
+		fmt.Fprintf(p.out, rowFmt+"\n",
+			displayNs,
+			displayName,
 			statusColor,
 			statusIcon+string(pod.Status),
 			colorReset,
@@ -107,8 +148,8 @@ func (p *Printer) printPodRow(pod analyzer.PodAnalysis, showNamespace bool) {
 			configMark,
 		)
 	} else {
-		fmt.Fprintf(p.out, "%-40s %s%-10s%s %-8s %-10d %-8s %-10s %-5s %s%s\n",
-			truncate(pod.Name, 40),
+		fmt.Fprintf(p.out, rowFmt+"\n",
+			displayName,
 			statusColor,
 			statusIcon+string(pod.Status),
 			colorReset,
