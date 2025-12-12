@@ -51,8 +51,9 @@ type PodAnalysis struct {
 	Reason        string        // 如果有问题，说明原因
 	ConfigIssues  []ConfigIssue // 配置问题列表
 	ContainerInfo []ContainerAnalysis
-	IsECI         bool   // 是否运行在 ECI 上
-	ECIInstanceID string // ECI 实例 ID
+	RunningOnECI  bool   // 是否实际运行在 ECI 节点上
+	HasECIConfig  bool   // 是否配置了 ECI 相关设置
+	ECIInstanceID string // ECI 实例 ID（如果有）
 	NodeName      string // 节点名称
 }
 
@@ -69,15 +70,16 @@ type ContainerAnalysis struct {
 
 // AnalysisResult 包含整体分析结果
 type AnalysisResult struct {
-	Pods             []PodAnalysis
-	TotalPods        int
-	HealthyPods      int
-	WarningPods      int
-	ErrorPods        int
-	PendingPods      int
-	TotalRestarts    int32
-	ConfigIssueCount int
-	ECIPodCount      int // ECI Pod 数量
+	Pods              []PodAnalysis
+	TotalPods         int
+	HealthyPods       int
+	WarningPods       int
+	ErrorPods         int
+	PendingPods       int
+	TotalRestarts     int32
+	ConfigIssueCount  int
+	RunningOnECICount int // 实际运行在 ECI 上的 Pod 数量
+	HasECIConfigCount int // 配置了 ECI 的 Pod 数量
 }
 
 // HasIssues 检查是否有任何问题
@@ -98,8 +100,11 @@ func AnalyzePods(pods *corev1.PodList, checkConfig bool) *AnalysisResult {
 
 		// 更新统计
 		result.TotalRestarts += analysis.Restarts
-		if analysis.IsECI {
-			result.ECIPodCount++
+		if analysis.RunningOnECI {
+			result.RunningOnECICount++
+		}
+		if analysis.HasECIConfig {
+			result.HasECIConfigCount++
 		}
 		switch analysis.Status {
 		case StatusHealthy:
@@ -127,8 +132,8 @@ func analyzeSinglePod(pod *corev1.Pod, checkConfig bool) PodAnalysis {
 		NodeName:  pod.Spec.NodeName,
 	}
 
-	// 检测是否是 ECI Pod
-	analysis.IsECI, analysis.ECIInstanceID = detectECI(pod)
+	// 检测 ECI 状态：区分实际运行位置和配置
+	analysis.RunningOnECI, analysis.HasECIConfig, analysis.ECIInstanceID = detectECI(pod)
 
 	// 计算运行时间（从容器实际开始运行算起）
 	analysis.RunningTime = calculateRunningTime(pod)
@@ -170,31 +175,71 @@ func analyzeSinglePod(pod *corev1.Pod, checkConfig bool) PodAnalysis {
 	return analysis
 }
 
-// detectECI 检测 Pod 是否运行在 ECI 上
-func detectECI(pod *corev1.Pod) (bool, string) {
-	// 方法1: 检查 ECI 实例 ID 注解（最可靠）
-	if eciID, ok := pod.Annotations[ECIPodAnnotation]; ok && eciID != "" {
-		return true, eciID
+// detectECI 检测 Pod 的 ECI 状态
+// 返回: (是否实际运行在ECI节点, 是否有ECI配置, ECI实例ID)
+func detectECI(pod *corev1.Pod) (runningOnECI bool, hasECIConfig bool, eciInstanceID string) {
+	// 1. 检查是否有 ECI 实例 ID（表示实际运行在 ECI 上）
+	if id, ok := pod.Annotations[ECIPodAnnotation]; ok && id != "" {
+		eciInstanceID = id
+		runningOnECI = true
+		hasECIConfig = true
+		return
 	}
 
-	// 方法2: 检查节点名是否包含 virtual-kubelet
-	if strings.Contains(strings.ToLower(pod.Spec.NodeName), ECINodeNamePrefix) {
-		return true, ""
-	}
-
-	// 方法3: 检查其他常见的 ECI 相关注解
-	eciAnnotations := []string{
-		"k8s.aliyun.com/eci-instance-spec",
-		"k8s.aliyun.com/eci-use-specs",
-		"alibabacloud.com/eci",
-	}
-	for _, anno := range eciAnnotations {
-		if _, ok := pod.Annotations[anno]; ok {
-			return true, ""
+	// 2. 检查节点名称判断是否实际运行在 ECI 节点
+	// 阿里云 ECI 节点名称通常包含 virtual-kubelet 或 eci
+	nodeName := strings.ToLower(pod.Spec.NodeName)
+	if nodeName != "" {
+		if strings.Contains(nodeName, "virtual-kubelet") ||
+			strings.Contains(nodeName, "-eci-") ||
+			strings.HasPrefix(nodeName, "eci-") ||
+			strings.Contains(nodeName, "virtual-node") {
+			runningOnECI = true
 		}
 	}
 
-	return false, ""
+	// 3. 检查是否有 ECI 相关配置（即使没有实际运行在 ECI 上）
+	eciConfigAnnotations := []string{
+		"k8s.aliyun.com/eci-use-specs",
+		"k8s.aliyun.com/eci-instance-spec",
+		"k8s.aliyun.com/eci-spot-strategy",
+		"k8s.aliyun.com/eci-spot-price-limit",
+		"k8s.aliyun.com/eci-with-eip",
+		"k8s.aliyun.com/eci-eip-bandwidth",
+		"k8s.aliyun.com/eci-image-cache",
+		"alibabacloud.com/eci",
+	}
+	for _, anno := range eciConfigAnnotations {
+		if _, ok := pod.Annotations[anno]; ok {
+			hasECIConfig = true
+			break
+		}
+	}
+
+	// 4. 检查 Pod 是否有 ECI 相关的 tolerations（容忍 virtual-kubelet 节点）
+	if !hasECIConfig {
+		for _, toleration := range pod.Spec.Tolerations {
+			if strings.Contains(strings.ToLower(toleration.Key), "virtual-kubelet") ||
+				strings.Contains(strings.ToLower(toleration.Value), "virtual-kubelet") {
+				hasECIConfig = true
+				break
+			}
+		}
+	}
+
+	// 5. 检查 nodeSelector 或 nodeAffinity 是否指向 ECI
+	if !hasECIConfig && pod.Spec.NodeSelector != nil {
+		for k, v := range pod.Spec.NodeSelector {
+			if strings.Contains(strings.ToLower(k), "virtual-kubelet") ||
+				strings.Contains(strings.ToLower(v), "virtual-kubelet") ||
+				strings.Contains(strings.ToLower(k), "eci") {
+				hasECIConfig = true
+				break
+			}
+		}
+	}
+
+	return
 }
 
 // calculateRunningTime 计算 Pod 实际运行时间

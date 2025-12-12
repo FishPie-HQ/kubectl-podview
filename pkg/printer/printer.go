@@ -108,10 +108,15 @@ func (p *Printer) printPodRowDynamic(pod analyzer.PodAnalysis, showNamespace boo
 	// 格式化 reason
 	reason := pod.Reason
 
-	// ECI 标记
+	// ECI 标记：区分实际运行位置和配置
+	// ECI  = 实际运行在 ECI 节点上
+	// eci* = 有 ECI 配置但运行在普通节点
+	// -    = 与 ECI 无关
 	eciMark := "-"
-	if pod.IsECI {
+	if pod.RunningOnECI {
 		eciMark = colorCyan + "ECI" + colorReset
+	} else if pod.HasECIConfig {
+		eciMark = colorYellow + "eci*" + colorReset
 	}
 
 	// 配置问题标记
@@ -200,11 +205,25 @@ func (p *Printer) PrintSummary(result *analyzer.AnalysisResult) {
 
 	fmt.Fprintf(p.out, "Total Restarts: %d\n", result.TotalRestarts)
 
-	// ECI Pod 统计 - 用青色
-	if result.ECIPodCount > 0 {
-		fmt.Fprintf(p.out, "%sECI Pods:       %d%s (%.1f%%)\n",
-			colorCyan, result.ECIPodCount, colorReset,
-			float64(result.ECIPodCount)/float64(result.TotalPods)*100)
+	// ECI 统计 - 区分实际运行和有配置的
+	if result.RunningOnECICount > 0 || result.HasECIConfigCount > 0 {
+		fmt.Fprintln(p.out)
+		fmt.Fprintln(p.out, colorBold+"ECI Status:"+colorReset)
+		if result.RunningOnECICount > 0 {
+			fmt.Fprintf(p.out, "  %sRunning on ECI: %d%s (%.1f%%)\n",
+				colorCyan, result.RunningOnECICount, colorReset,
+				float64(result.RunningOnECICount)/float64(result.TotalPods)*100)
+		}
+		if result.HasECIConfigCount > 0 {
+			// 显示有 ECI 配置但不在 ECI 上运行的数量
+			notOnECI := result.HasECIConfigCount - result.RunningOnECICount
+			if notOnECI > 0 {
+				fmt.Fprintf(p.out, "  %sECI configured: %d%s (not on ECI: %d)\n",
+					colorYellow, result.HasECIConfigCount, colorReset, notOnECI)
+			} else {
+				fmt.Fprintf(p.out, "  ECI configured: %d\n", result.HasECIConfigCount)
+			}
+		}
 	}
 
 	if result.ConfigIssueCount > 0 {
