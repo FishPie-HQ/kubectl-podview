@@ -10,13 +10,14 @@ import (
 
 // 终端颜色代码
 const (
-	colorReset  = "\033[0m"
-	colorRed    = "\033[31m"
-	colorGreen  = "\033[32m"
-	colorYellow = "\033[33m"
-	colorBlue   = "\033[34m"
-	colorCyan   = "\033[36m"
-	colorBold   = "\033[1m"
+	colorReset   = "\033[0m"
+	colorRed     = "\033[31m"
+	colorGreen   = "\033[32m"
+	colorYellow  = "\033[33m"
+	colorBlue    = "\033[34m"
+	colorMagenta = "\033[35m"
+	colorCyan    = "\033[36m"
+	colorBold    = "\033[1m"
 )
 
 // Printer 负责格式化输出
@@ -30,12 +31,21 @@ func NewPrinter(out io.Writer) *Printer {
 }
 
 // PrintPodTable 打印 Pod 表格
-func (p *Printer) PrintPodTable(result *analyzer.AnalysisResult, showAll bool) {
-	// 表头
-	header := fmt.Sprintf("%-40s %-10s %-8s %-10s %-10s %-s",
-		"NAME", "STATUS", "READY", "RESTARTS", "AGE", "REASON")
+func (p *Printer) PrintPodTable(result *analyzer.AnalysisResult, showAll bool, showNamespace bool) {
+	// 表头 - 根据是否显示命名空间决定格式
+	var header string
+	var separator int
+	if showNamespace {
+		header = fmt.Sprintf("%-20s %-35s %-10s %-8s %-10s %-8s %-10s %-5s %-s",
+			"NAMESPACE", "NAME", "STATUS", "READY", "RESTARTS", "AGE", "RUNNING", "ECI", "REASON")
+		separator = 130
+	} else {
+		header = fmt.Sprintf("%-40s %-10s %-8s %-10s %-8s %-10s %-5s %-s",
+			"NAME", "STATUS", "READY", "RESTARTS", "AGE", "RUNNING", "ECI", "REASON")
+		separator = 115
+	}
 	fmt.Fprintln(p.out, colorBold+header+colorReset)
-	fmt.Fprintln(p.out, strings.Repeat("-", 100))
+	fmt.Fprintln(p.out, strings.Repeat("-", separator))
 
 	displayedCount := 0
 	for _, pod := range result.Pods {
@@ -45,7 +55,7 @@ func (p *Printer) PrintPodTable(result *analyzer.AnalysisResult, showAll bool) {
 		}
 
 		displayedCount++
-		p.printPodRow(pod)
+		p.printPodRow(pod, showNamespace)
 	}
 
 	if displayedCount == 0 {
@@ -55,7 +65,7 @@ func (p *Printer) PrintPodTable(result *analyzer.AnalysisResult, showAll bool) {
 }
 
 // printPodRow 打印单行 Pod 信息
-func (p *Printer) printPodRow(pod analyzer.PodAnalysis) {
+func (p *Printer) printPodRow(pod analyzer.PodAnalysis, showNamespace bool) {
 	// 状态颜色
 	statusColor := p.getStatusColor(pod.Status)
 
@@ -64,8 +74,14 @@ func (p *Printer) printPodRow(pod analyzer.PodAnalysis) {
 
 	// 格式化 reason，如果太长就截断
 	reason := pod.Reason
-	if len(reason) > 30 {
-		reason = reason[:27] + "..."
+	if len(reason) > 25 {
+		reason = reason[:22] + "..."
+	}
+
+	// ECI 标记
+	eciMark := "-"
+	if pod.IsECI {
+		eciMark = colorCyan + "ECI" + colorReset
 	}
 
 	// 配置问题标记
@@ -75,17 +91,36 @@ func (p *Printer) printPodRow(pod analyzer.PodAnalysis) {
 	}
 
 	// 打印主行
-	fmt.Fprintf(p.out, "%-40s %s%-10s%s %-8s %-10d %-10s %s%s\n",
-		truncate(pod.Name, 40),
-		statusColor,
-		statusIcon+string(pod.Status),
-		colorReset,
-		pod.Ready,
-		pod.Restarts,
-		pod.Age,
-		reason,
-		configMark,
-	)
+	if showNamespace {
+		fmt.Fprintf(p.out, "%-20s %-35s %s%-10s%s %-8s %-10d %-8s %-10s %-5s %s%s\n",
+			truncate(pod.Namespace, 20),
+			truncate(pod.Name, 35),
+			statusColor,
+			statusIcon+string(pod.Status),
+			colorReset,
+			pod.Ready,
+			pod.Restarts,
+			pod.Age,
+			pod.RunningTime,
+			eciMark,
+			reason,
+			configMark,
+		)
+	} else {
+		fmt.Fprintf(p.out, "%-40s %s%-10s%s %-8s %-10d %-8s %-10s %-5s %s%s\n",
+			truncate(pod.Name, 40),
+			statusColor,
+			statusIcon+string(pod.Status),
+			colorReset,
+			pod.Ready,
+			pod.Restarts,
+			pod.Age,
+			pod.RunningTime,
+			eciMark,
+			reason,
+			configMark,
+		)
+	}
 
 	// 如果有配置问题，打印详情
 	if len(pod.ConfigIssues) > 0 {
@@ -123,6 +158,13 @@ func (p *Printer) PrintSummary(result *analyzer.AnalysisResult) {
 	}
 
 	fmt.Fprintf(p.out, "Total Restarts: %d\n", result.TotalRestarts)
+
+	// ECI Pod 统计 - 用青色
+	if result.ECIPodCount > 0 {
+		fmt.Fprintf(p.out, "%sECI Pods:       %d%s (%.1f%%)\n",
+			colorCyan, result.ECIPodCount, colorReset,
+			float64(result.ECIPodCount)/float64(result.TotalPods)*100)
+	}
 
 	if result.ConfigIssueCount > 0 {
 		fmt.Fprintf(p.out, "%sConfig Issues:  %d%s\n", colorYellow, result.ConfigIssueCount, colorReset)
